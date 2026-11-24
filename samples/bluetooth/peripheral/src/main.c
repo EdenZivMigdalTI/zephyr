@@ -81,12 +81,15 @@ static ssize_t write_vnd(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 }
 
 static uint8_t simulate_vnd;
+/* Wakes main loop when indications are enabled, so it can sleep forever otherwise */
+static K_SEM_DEFINE(vnd_sem, 0, 1);
 static uint8_t indicating;
 static struct bt_gatt_indicate_params ind_params;
 
 static void vnd_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
 	simulate_vnd = (value == BT_GATT_CCC_INDICATE) ? 1 : 0;
+	k_sem_give(&vnd_sem);
 }
 
 static void indicate_cb(struct bt_conn *conn,
@@ -459,7 +462,18 @@ int main(void)
 	 * of starting delayed work so we do it here
 	 */
 	while (1) {
+#if defined(CONFIG_BT_CTS) || defined(CONFIG_BT_HRS) || defined(CONFIG_BT_BAS)
 		k_sleep(K_SECONDS(1));
+#else
+		/* Nothing periodic to do: stay asleep (no 1s wakeups) until indications
+		 * are enabled, then run once per second while they stay enabled.
+		 */
+		if (!simulate_vnd) {
+			k_sem_take(&vnd_sem, K_FOREVER);
+			continue;
+		}
+		k_sleep(K_SECONDS(1));
+#endif
 
 		/* Current time update notification example
 		 * For testing purposes, we send a manual update notification every second.
