@@ -21,18 +21,10 @@
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
-#if defined(CONFIG_BT_BAS)
 #include <zephyr/bluetooth/services/bas.h>
-#endif
-#if defined(CONFIG_BT_CTS)
 #include <zephyr/bluetooth/services/cts.h>
-#endif
-#if defined(CONFIG_BT_HRS)
 #include <zephyr/bluetooth/services/hrs.h>
-#endif
-#if defined(CONFIG_BT_IAS)
 #include <zephyr/bluetooth/services/ias.h>
-#endif
 
 /* Custom Service Variables */
 #define BT_UUID_CUSTOM_SERVICE_VAL \
@@ -81,15 +73,12 @@ static ssize_t write_vnd(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 }
 
 static uint8_t simulate_vnd;
-/* Wakes main loop when indications are enabled, so it can sleep forever otherwise */
-static K_SEM_DEFINE(vnd_sem, 0, 1);
 static uint8_t indicating;
 static struct bt_gatt_indicate_params ind_params;
 
 static void vnd_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
 	simulate_vnd = (value == BT_GATT_CCC_INDICATE) ? 1 : 0;
-	k_sem_give(&vnd_sem);
 }
 
 static void indicate_cb(struct bt_conn *conn,
@@ -198,15 +187,10 @@ BT_GATT_SERVICE_DEFINE(vnd_svc,
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-#if defined(CONFIG_BT_HRS)
-	BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_HRS_VAL)),
-#endif
-#if defined(CONFIG_BT_BAS)
-	BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_BAS_VAL)),
-#endif
-#if defined(CONFIG_BT_CTS)
-	BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_CTS_VAL)),
-#endif
+	BT_DATA_BYTES(BT_DATA_UUID16_ALL,
+		      BT_UUID_16_ENCODE(BT_UUID_HRS_VAL),
+		      BT_UUID_16_ENCODE(BT_UUID_BAS_VAL),
+		      BT_UUID_16_ENCODE(BT_UUID_CTS_VAL)),
 	BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_CUSTOM_SERVICE_VAL),
 };
 
@@ -237,12 +221,6 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	printk("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
 }
 
-BT_CONN_CB_DEFINE(conn_callbacks) = {
-	.connected = connected,
-	.disconnected = disconnected,
-};
-
-#if defined(CONFIG_BT_IAS)
 static void alert_stop(void)
 {
 	printk("Alert stopped\n");
@@ -258,12 +236,16 @@ static void alert_high_start(void)
 	printk("High alert started\n");
 }
 
+BT_CONN_CB_DEFINE(conn_callbacks) = {
+	.connected = connected,
+	.disconnected = disconnected,
+};
+
 BT_IAS_CB_DEFINE(ias_callbacks) = {
 	.no_alert = alert_stop,
 	.mild_alert = alert_start,
 	.high_alert = alert_high_start,
 };
-#endif /* CONFIG_BT_IAS */
 
 static void bt_ready(void)
 {
@@ -310,7 +292,6 @@ static struct bt_conn_auth_cb auth_cb_display = {
 };
 #endif
 
-#if defined(CONFIG_BT_BAS)
 static void bas_notify(void)
 {
 	uint8_t battery_level = bt_bas_get_battery_level();
@@ -323,9 +304,7 @@ static void bas_notify(void)
 
 	bt_bas_set_battery_level(battery_level);
 }
-#endif /* CONFIG_BT_BAS */
 
-#if defined(CONFIG_BT_HRS)
 static uint8_t bt_heartrate = BT_HR_HEARTRATE_DEFAULT_MIN;
 
 static void hrs_notify(void)
@@ -338,9 +317,6 @@ static void hrs_notify(void)
 
 	bt_hrs_notify(bt_heartrate);
 }
-#endif /* CONFIG_BT_HRS */
-
-#if defined(CONFIG_BT_CTS)
 
 /**
  * variable to hold reference milliseconds to epoch when device booted
@@ -408,9 +384,6 @@ const struct bt_cts_cb cts_cb = {
 	.cts_local_time_write = cts_local_time_write_cb,
 	.fill_current_cts_local_time = cts_fill_local_time_cb,
 };
-#endif /* CONFIG_BT_CTS */
-
-#if defined(CONFIG_BT_HRS)
 
 static int bt_hrs_ctrl_point_write(uint8_t request)
 {
@@ -426,7 +399,6 @@ static int bt_hrs_ctrl_point_write(uint8_t request)
 static struct bt_hrs_cb hrs_cb = {
 	.ctrl_point_write = bt_hrs_ctrl_point_write,
 };
-#endif /* CONFIG_BT_HRS */
 
 int main(void)
 {
@@ -441,12 +413,8 @@ int main(void)
 	}
 
 	bt_ready();
-#if defined(CONFIG_BT_CTS)
 	bt_cts_init(&cts_cb);
-#endif
-#if defined(CONFIG_BT_HRS)
 	bt_hrs_cb_register(&hrs_cb);
-#endif
 
 	bt_gatt_cb_register(&gatt_callbacks);
 #if defined(CONFIG_BT_SMP)
@@ -462,36 +430,20 @@ int main(void)
 	 * of starting delayed work so we do it here
 	 */
 	while (1) {
-#if defined(CONFIG_BT_CTS) || defined(CONFIG_BT_HRS) || defined(CONFIG_BT_BAS)
 		k_sleep(K_SECONDS(1));
-#else
-		/* Nothing periodic to do: stay asleep (no 1s wakeups) until indications
-		 * are enabled, then run once per second while they stay enabled.
-		 */
-		if (!simulate_vnd) {
-			k_sem_take(&vnd_sem, K_FOREVER);
-			continue;
-		}
-		k_sleep(K_SECONDS(1));
-#endif
 
 		/* Current time update notification example
 		 * For testing purposes, we send a manual update notification every second.
 		 * In production `bt_cts_send_notification` should only be used when time is changed
 		 */
-#if defined(CONFIG_BT_CTS)
 		if (cts_notification_enabled) {
 			bt_cts_send_notification(BT_CTS_UPDATE_REASON_MANUAL);
 		}
-#endif
-#if defined(CONFIG_BT_HRS)
 		/* Heartrate measurements simulation */
 		hrs_notify();
-#endif
-#if defined(CONFIG_BT_BAS)
+
 		/* Battery level simulation */
 		bas_notify();
-#endif
 
 		/* Vendor indication simulation */
 		if (simulate_vnd && vnd_ind_attr) {
