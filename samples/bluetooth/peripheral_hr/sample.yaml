@@ -16,6 +16,9 @@ tests:
       - nrf54l15dk/nrf54l15/cpuapp
       - ophelia4ev/nrf54l15/cpuapp
       - nrf54lm20dk/nrf54lm20a/cpuapp
+      - lp_em_cc2340r53
+      - lp_em_cc2745r10_q1/cc2745r10_q1
+      - lp_em_cc2755p20
     integration_platforms:
       - qemu_cortex_m3
       - nrf52_bsim
@@ -27,6 +30,9 @@ tests:
       - nrf54l15dk/nrf54l15/cpuapp
       - ophelia4ev/nrf54l15/cpuapp
       - nrf54lm20dk/nrf54lm20a/cpuapp
+      - lp_em_cc2340r53
+      - lp_em_cc2745r10_q1/cc2745r10_q1
+      - lp_em_cc2755p20
     tags: bluetooth
     sysbuild: true
   sample.bluetooth.peripheral_hr.minimal:
