@@ -15,17 +15,33 @@
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
+#if defined(CONFIG_BT_BAS)
 #include <zephyr/bluetooth/services/bas.h>
+#endif
+#if defined(CONFIG_BT_HRS)
 #include <zephyr/bluetooth/services/hrs.h>
+#endif
 
+#if defined(CONFIG_BT_HRS)
 static bool hrf_ntf_enabled;
+#endif
+
+/* Wakes the main loop on connect/disconnect so it can sleep forever when
+ * there are no periodic HRS/BAS updates to send.
+ */
+static K_SEM_DEFINE(state_sem, 0, 1);
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-	BT_DATA_BYTES(BT_DATA_UUID16_ALL,
-		      BT_UUID_16_ENCODE(BT_UUID_HRS_VAL),
-		      BT_UUID_16_ENCODE(BT_UUID_BAS_VAL),
-		      BT_UUID_16_ENCODE(BT_UUID_DIS_VAL)),
+#if defined(CONFIG_BT_HRS)
+	BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_HRS_VAL)),
+#endif
+#if defined(CONFIG_BT_BAS)
+	BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_BAS_VAL)),
+#endif
+#if defined(CONFIG_BT_DIS)
+	BT_DATA_BYTES(BT_DATA_UUID16_ALL, BT_UUID_16_ENCODE(BT_UUID_DIS_VAL)),
+#endif
 #if defined(CONFIG_BT_EXT_ADV)
 	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 #endif /* CONFIG_BT_EXT_ADV */
@@ -54,6 +70,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 		printk("Connected\n");
 
 		(void)atomic_set_bit(state, STATE_CONNECTED);
+		k_sem_give(&state_sem);
 	}
 }
 
@@ -62,6 +79,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	printk("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
 
 	(void)atomic_set_bit(state, STATE_DISCONNECTED);
+	k_sem_give(&state_sem);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -69,6 +87,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.disconnected = disconnected,
 };
 
+#if defined(CONFIG_BT_HRS)
 static void hrs_ntf_changed(bool enabled)
 {
 	hrf_ntf_enabled = enabled;
@@ -80,7 +99,9 @@ static void hrs_ntf_changed(bool enabled)
 static struct bt_hrs_cb hrs_cb = {
 	.ntf_changed = hrs_ntf_changed,
 };
+#endif /* CONFIG_BT_HRS */
 
+#if defined(CONFIG_BT_SMP)
 static void auth_cancel(struct bt_conn *conn)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
@@ -93,7 +114,9 @@ static void auth_cancel(struct bt_conn *conn)
 static struct bt_conn_auth_cb auth_cb_display = {
 	.cancel = auth_cancel,
 };
+#endif /* CONFIG_BT_SMP */
 
+#if defined(CONFIG_BT_BAS)
 static void bas_notify(void)
 {
 	uint8_t battery_level = bt_bas_get_battery_level();
@@ -106,7 +129,9 @@ static void bas_notify(void)
 
 	bt_bas_set_battery_level(battery_level);
 }
+#endif /* CONFIG_BT_BAS */
 
+#if defined(CONFIG_BT_HRS)
 static void hrs_notify(void)
 {
 	static uint8_t heartrate = 90U;
@@ -121,6 +146,7 @@ static void hrs_notify(void)
 		bt_hrs_notify(heartrate);
 	}
 }
+#endif /* CONFIG_BT_HRS */
 
 #if defined(CONFIG_GPIO)
 /* The devicetree node identifier for the "led0" alias. */
@@ -201,9 +227,13 @@ int main(void)
 
 	printk("Bluetooth initialized\n");
 
+#if defined(CONFIG_BT_SMP)
 	bt_conn_auth_cb_register(&auth_cb_display);
+#endif
 
+#if defined(CONFIG_BT_HRS)
 	bt_hrs_cb_register(&hrs_cb);
+#endif
 
 #if !defined(CONFIG_BT_EXT_ADV)
 	printk("Starting Legacy Advertising (connectable and scannable)\n");
@@ -267,13 +297,22 @@ int main(void)
 
 	/* Implement notification. */
 	while (1) {
+#if defined(CONFIG_BT_HRS) || defined(CONFIG_BT_BAS)
 		k_sleep(K_SECONDS(1));
+#else
+		/* Nothing periodic to do: sleep until a connect/disconnect event */
+		k_sem_take(&state_sem, K_FOREVER);
+#endif
 
+#if defined(CONFIG_BT_HRS)
 		/* Heartrate measurements simulation */
 		hrs_notify();
+#endif
 
+#if defined(CONFIG_BT_BAS)
 		/* Battery level simulation */
 		bas_notify();
+#endif
 
 		if (atomic_test_and_clear_bit(state, STATE_CONNECTED)) {
 			/* Connected callback executed */
@@ -281,7 +320,12 @@ int main(void)
 #if defined(HAS_LED)
 			blink_stop();
 #endif /* HAS_LED */
-		} else if (atomic_test_and_clear_bit(state, STATE_DISCONNECTED)) {
+		}
+
+		/* Not "else if": the semaphore only holds one token, so a quick
+		 * connect + disconnect must be handled in a single pass.
+		 */
+		if (atomic_test_and_clear_bit(state, STATE_DISCONNECTED)) {
 #if !defined(CONFIG_BT_EXT_ADV)
 			printk("Starting Legacy Advertising (connectable and scannable)\n");
 			err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd,
